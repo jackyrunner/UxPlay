@@ -1,68 +1,27 @@
-name: Build
+name: Build macOS Binary
 
 on:
   push:
     branches: [ master, main ]
   pull_request:
     branches: [ master, main ]
+  workflow_dispatch: # 支持手动点击按钮触发
 
 env:
-  BUILD_TYPE: RelWithDebInfo
-  # Disable interactive features
-  DEBIAN_FRONTEND: noninteractive
-  HOMEBREW_NO_ANALYTICS: 1
-  HOMEBREW_NO_INSTALL_CLEANUP: 1
+  BUILD_TYPE: Release
 
 jobs:
-  build-linux:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            cmake \
-            g++ \
-            make \
-            libssl-dev \
-            libplist-dev \
-            gstreamer1.0-dev \
-            libgstreamer1.0-dev \
-            libgstreamer-plugins-base1.0-dev \
-            gstreamer1.0-plugins-base \
-            gstreamer1.0-plugins-good \
-            gstreamer1.0-x \
-            libgl1-mesa-dev \
-            libdbus-1-dev \
-            pkg-config
-
-      - name: Configure CMake
-        run: |
-          cmake -B build -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} \
-            -DNO_X11_DEPS=OFF
-
-      - name: Build
-        run: cmake --build build --parallel
-
-      - name: Verify binary
-        run: |
-          test -x build/uxplay
-          ls -la build/uxplay
-
   build-macos:
-    runs-on: macos-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
+    # macos-15 为 Apple Silicon (M 系列 ARM64)，如需 Intel 可替换为 macos-13
+    runs-on: macos-15
 
-      - name: Remove untrusted Homebrew AWS tap
-        run: brew untap aws/tap || true
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
       - name: Install dependencies
         run: |
+          brew update
           brew install \
             cmake \
             openssl@3 \
@@ -71,121 +30,47 @@ jobs:
             gstreamer \
             gst-plugins-base \
             gst-plugins-good \
+            gst-libav \
             orc \
-            meson
+            dylibbundler
 
-      - name: Set OpenSSL path
+      - name: Set OpenSSL Environment
         run: |
           echo "OPENSSL_ROOT_DIR=$(brew --prefix openssl@3)" >> $GITHUB_ENV
+          echo "PKG_CONFIG_PATH=$(brew --prefix openssl@3)/lib/pkgconfig:$PKG_CONFIG_PATH" >> $GITHUB_ENV
 
       - name: Configure CMake
         run: |
-          cmake -B build -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} \
+          cmake -B build \
+            -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} \
             -DNO_X11_DEPS=ON
 
-      - name: Build
-        run: cmake --build build --parallel
+      - name: Build binary
+        run: |
+          cmake --build build --parallel --config ${{ env.BUILD_TYPE }}
 
-      - name: Verify binary
+      - name: Verify build output
         run: |
           test -x build/uxplay
           ls -la build/uxplay
+          file build/uxplay
 
-  build-windows-intel:
-    runs-on: windows-latest
-    strategy:
-      matrix:
-        msystem: [UCRT64, MINGW64]
-        include:
-          - msystem: UCRT64
-            pkg_prefix: mingw-w64-ucrt-x86_64
-            path_prefix: ucrt64
-          - msystem: MINGW64
-            pkg_prefix: mingw-w64-x86_64
-            path_prefix: mingw64
-    defaults:
-      run:
-        shell: msys2 {0}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
+      - name: Package bundle with dylibs
+        run: |
+          mkdir -p dist/bin dist/lib
+          cp build/uxplay dist/bin/
+          
+          # 自动收集该二进制引用的 Homebrew 动态链接库并修复 rpath
+          dylibbundler -b -x dist/bin/uxplay -d dist/lib/ -p "@executable_path/../lib" -of || true
+          
+          # 打包为压缩文件
+          cd dist
+          zip -r ../uxplay-macos-arm64.zip bin lib
+          cd ..
 
-      - name: Install MSYS2
-        uses: msys2/setup-msys2@v2
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
         with:
-          msystem: ${{ matrix.msystem }}
-          update: true
-          install: >-
-            ${{ matrix.pkg_prefix }}-cmake
-            ${{ matrix.pkg_prefix }}-gcc
-            ${{ matrix.pkg_prefix }}-openssl
-            ${{ matrix.pkg_prefix }}-libplist
-            ${{ matrix.pkg_prefix }}-gstreamer
-            ${{ matrix.pkg_prefix }}-gst-plugins-base
-            ${{ matrix.pkg_prefix }}-gst-plugins-good
-            ${{ matrix.pkg_prefix }}-pkg-config
-            base-devel
-
-      - name: Configure CMake
-        env:
-          PKG_CONFIG_PATH: /${{ matrix.path_prefix }}/lib/pkgconfig
-        run: |
-          cmake -B build -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} \
-            -DNO_X11_DEPS=ON
-
-      - name: Build
-        run: cmake --build build --parallel
-
-      - name: Verify binary
-        run: |
-          test -f build/uxplay.exe
-          ls -la build/uxplay.exe
-
-
-  build-windows-arm64:
-    runs-on: windows-11-arm
-    strategy:
-      matrix:
-        msystem: [CLANGARM64]
-        include:
-          - msystem: CLANGARM64
-            pkg_prefix: mingw-w64-clang-aarch64
-            path_prefix: clangarm64
-    defaults:
-      run:
-        shell: msys2 {0}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Install MSYS2
-        uses: msys2/setup-msys2@v2
-        with:
-          msystem: ${{ matrix.msystem }}
-          update: true
-          install: >-
-            ${{ matrix.pkg_prefix }}-cmake
-            ${{ matrix.pkg_prefix }}-gcc
-            ${{ matrix.pkg_prefix }}-openssl
-            ${{ matrix.pkg_prefix }}-libplist
-            ${{ matrix.pkg_prefix }}-gstreamer
-            ${{ matrix.pkg_prefix }}-gst-plugins-base
-            ${{ matrix.pkg_prefix }}-gst-plugins-good
-            ${{ matrix.pkg_prefix }}-pkg-config
-            base-devel
-
-      - name: Configure CMake
-        env:
-          PKG_CONFIG_PATH: /${{ matrix.path_prefix }}/lib/pkgconfig
-        run: |
-          cmake -B build -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} \
-            -DNO_X11_DEPS=ON
-
-      - name: Build
-        run: cmake --build build --parallel
-
-      - name: Verify binary
-        run: |
-          test -f build/uxplay.exe
-          ls -la build/uxplay.exe
-
+          name: uxplay-macos-arm64
+          path: uxplay-macos-arm64.zip
+          retention-days: 30
