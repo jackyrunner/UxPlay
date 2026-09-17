@@ -1,0 +1,28 @@
+name: Build UxPlay for Mac
+
+on:
+  workflow_dispatch: # 允许你手动点击按钮触发编译
+
+jobs:
+  build-macos:
+    runs-on: macos-13 # 使用 GitHub 的 macOS 云端服务器
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        brew install cmake libplist openssl@3 pkg-config gstreamer
+
+    - name: Configure and Build
+      run: |
+        mkdir build && cd build
+        cmake ..
+        make
+
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: uxplay-mac-binary
+        path: build/uxplay
